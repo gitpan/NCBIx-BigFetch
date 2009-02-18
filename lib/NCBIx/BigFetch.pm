@@ -8,7 +8,7 @@ use YAML qw(DumpFile LoadFile);
 use Time::HiRes qw(usleep);
 use Bio::SeqIO;
 
-use version; our $VERSION = qv('0.5.0');
+use version; our $VERSION = qv('0.5.2');
 
 our $config_file   = 'efetch_N.yml';
 our $esearch_file  = 'esearch_N.txt';
