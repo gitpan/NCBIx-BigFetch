@@ -16,6 +16,9 @@ our $data_file     = 'sequences_N_M.txt';
 our $clean_file    = 'sequences_N.txt';
 our $sleep_policy  = 2_750_000;
 
+# Silence Perl::Critic from complaining about $config hashref
+## no critic (ProhibitAccessOfPrivateData)
+
 {
 	my %config_of;
 
@@ -345,25 +348,25 @@ our $sleep_policy  = 2_750_000;
 		my ( $self, $path_file_name ) = @_;
 		my ($text, $line);
 		if (-e $path_file_name) {
-			open  (IN, "<$path_file_name") || die("Cannot open $path_file_name: $!");
-			while ($line = <IN>) { $text .= $line; }
-			close (IN);
+			open  (my $IN, '<', $path_file_name) || die("Cannot open $path_file_name: $!");
+			while ($line = <$IN>) { $text .= $line; }
+			close ($IN);
 		}
 		return $text;
 	}
 	
 	sub _set_file_text {
 		my ( $self, $path_file_name, $text ) = @_;
-		open  (OUT, ">$path_file_name") || die("Cannot open $path_file_name: $!");
-		print OUT $text;
-		close (IN);
+		open  (my $OUT, '>', $path_file_name) || die("Cannot open $path_file_name: $!");
+		print $OUT $text;
+		close ($OUT);
 	}
 	
 	sub _add_file_text {
 		my ( $self, $path_file_name, $text ) = @_;
-		open  (OUT, ">>$path_file_name") || die("Cannot open $path_file_name: $!");
-		print OUT $text;
-		close (IN);
+		open  (my $OUT, '>>', $path_file_name) || die("Cannot open $path_file_name: $!");
+		print $OUT $text;
+		close ($OUT);
 	}
 
 	sub _commify { # Perl Cookbook 2.17
@@ -428,7 +431,7 @@ to pick-up the download and recover missing batches or sequences.
 
 Results are retrived in batches depending on the "retmax" size. 
 
-=head2 FUNCTIONS
+=head2 MAIN FUNCTIONS
 
 =over 4
 
@@ -458,6 +461,12 @@ kept in memory and updated in the configuration file. If the
 download is interrupted and restarted, the correct index will be 
 used and no data will be lost.
 
+=item * note_missing_batch()
+
+  $project->note_missing_batch( $index );
+
+Adds the batch index to the list of missing batches.
+
 =item * missing_batches()
 
   while ( $project->missing_batches() ) { ... }
@@ -482,6 +491,14 @@ Recovery: edit the configuration file and add the index back to the
 missing list. The index will be reported to STDOUT in the status 
 message.
 
+=item * get_batch()
+
+  $project->get_batch( $index );
+
+Gets a single batch using the index parameter. This routine may be 
+called on its own, but it is intended to only be used by get_next_batch() 
+and get_missing_batch().
+
 =item * unavailable_ids()
 
   my $ids = $project->unavailable_ids();
@@ -493,7 +510,6 @@ is returned as a perl list reference.
 
 =item * get_sequence()
 
-
   $project->get_sequence( $id );
 
 Notice that this method depends on a loaded (or started) project. It 
@@ -502,27 +518,185 @@ which uses "0" as an index. All unavailable sequences retrieved
 this way are saved to this file, so it could potentially be larger 
 than the rest.
 
+=item * clean_sequences()
+
+  $project->clean_sequences();
+
+Removes non-sequence text from sequence files and optionally removes 
+sequences with ambiguous characters.
+
 =item * authors()
 
   $project->authors();
 
 Surely you can stand a few bytes of vanity for the price of free software!
 
+=item * BUILD()
+
+  my $project = NCBIx::BigFetch->new( $params );
+
+This method is *not* called directly, but rather included in the new() 
+method thanks to Class::Std.
+
+=back
+
+=head2 PROPERTY FUNCTIONS
+
+These get/set functions manage the modules properties.
+
+=over 4
+
+=item * get_base_dir()
+
+  $project->get_base_dir();
+
+Gets the base directory for project data.
+
+=item * get_base_url()
+
+  $project->get_base_url();
+
+Gets the base URL for NCBI eUtils.
+
+=item * get_clean_filename()
+
+  $project->get_clean_filename();
+
+Creates a filename for a project's sequences to store "cleaned" sequences.
+
+=item * get_config_filename()
+
+  $project->get_config_filename();
+
+Creates a filename for the configuration file based on the project_id.
+
+=item * get_count()
+
+  $project->get_count();
+
+Returns the count of results for the query.
+
+=item * get_data_filename()
+
+  $project->get_data_filename();
+
+Creates a filename for a given batch based on project_id and result index.
+
+=item * get_db()
+
+  $project->get_db();
+
+Gets the eSearch database setting.
+
+=item * get_esearch_filename()
+
+  $project->get_esearch_filename();
+
+Creates a filename for saving the intial search request.
+
+=item * get_index()
+
+  $project->get_index();
+
+Gets the current result index. The index is reset after every attempted batch by 
+retmax amount.
+
+=item * get_missing()
+
+  $project->get_missing();
+
+Gets the list of missing batch indices.
+
+=item * get_project_id()
+
+  $project->get_project_id();
+
+Gets the project_id for the loaded project.
+
+=item * get_query()
+
+  $project->get_query();
+
+Gets the query string used for eSearch.
+
+=item * get_querykey()
+
+  $project->get_querykey();
+
+Gets the querykey setting from the eSearch results.
+
+=item * get_return_max()
+
+  $project->get_return_max();
+
+Gets the retmax setting used to limit the batch size.
+
+=item * get_return_type()
+
+  $project->get_return_type();
+
+Gets the rettype setting used to determine the format 
+of fetched sequences.
+
+=item * get_start_date()
+
+  $project->get_start_date();
+
+Calculates the start date for the project.
+
+=item * get_start_time()
+
+  $project->get_start_time();
+
+Calculates the start time for the project.
+
+=item * get_webenv()
+
+  $project->get_webenv();
+
+Gets the WebEnv key returned from eSearch. It is used 
+to build the eFetch URL for retrieving batches of 
+sequences.
+
+=item * next_index()
+
+  $project->next_index();
+
+Gets the next result index, which defines the batch id.
+
+=item * set_index()
+
+  $project->set_index();
+
+Sets the result index.
+
+=item * set_missing()
+
+  $project->set_missing();
+
+Sets the list of missing batches.
+
 =back
 
 =head2 EXPORT
 
-  None
+None
 
 =head1 SEE ALSO
 
 http://bioinformatics.ualr.edu/
 
-=head1 AUTHOR
+http://www.ncbi.nlm.nih.gov/entrez/query/static/efetch_help.html
 
-Roger Hall <roger@iosea.com>
-Michael Bauer <mbkodos@gmail.com>
-Kamakshi Duvvuru <kduvvuru@gmail.com>
+http://eutils.ncbi.nlm.nih.gov/entrez/query/static/efetchseq_help.html
+
+=head1 AUTHORS
+
+Roger Hall <roger@iosea.com> 
+
+Michael Bauer <mbkodos@gmail.com> 
+
+Kamakshi Duvvuru <kduvvuru@gmail.com> 
 
 =head1 COPYRIGHT AND LICENSE
 
