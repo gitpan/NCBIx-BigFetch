@@ -3,12 +3,13 @@ use warnings;
 use strict;
 use Class::Std;
 use Class::Std::Utils;
+use Carp;
 use LWP::Simple;
 use YAML qw(DumpFile LoadFile);
 use Time::HiRes qw(usleep);
 use Bio::SeqIO;
 
-use version; our $VERSION = qv('0.5.2');
+use version; our $VERSION = qv('0.5.5');
 
 our $config_file   = 'efetch_N.yml';
 our $esearch_file  = 'esearch_N.txt';
@@ -20,27 +21,22 @@ our $sleep_policy  = 2_750_000;
 ## no critic (ProhibitAccessOfPrivateData)
 
 {
-	my %config_of;
+	my %project_id_of         :ATTR( :get<asdf> :set<asdf> );
+	my %base_url_of           :ATTR( :get<asdf> :set<asdf> );
+	my %base_dir_of           :ATTR( :get<asdf> :set<asdf> );
+	my %db_of                 :ATTR( :get<asdf> :set<asdf> );
+	my %query_of              :ATTR( :get<asdf> :set<asdf> );
+	my %querykey_of           :ATTR( :get<asdf> :set<asdf> );
+	my %webenv_of             :ATTR( :get<asdf> :set<asdf> );
+	my %count_of              :ATTR( :get<asdf> :set<asdf> );
+	my %index_of              :ATTR( :get<asdf> :set<asdf> );
+	my %start_date_of         :ATTR( :get<asdf> :set<asdf> );
+	my %start_time_of         :ATTR( :get<asdf> :set<asdf> );
+	my %return_max_of         :ATTR( :get<asdf> :set<asdf> );
+	my %return_type_of        :ATTR( :get<asdf> :set<asdf> );
+	my %missing_of            :ATTR( :get<asdf> :set<asdf> );
 
-	sub get_project_id       { my ($self)  = @_; my $config = $config_of{ident $self}; return $config->{project_id}; }
-	sub get_base_url         { my ($self)  = @_; my $config = $config_of{ident $self}; return $config->{base_url}; }
-	sub get_base_dir         { my ($self)  = @_; my $config = $config_of{ident $self}; return $config->{base_dir}; }
-	sub get_db               { my ($self)  = @_; my $config = $config_of{ident $self}; return $config->{db}; }
-	sub get_query            { my ($self)  = @_; my $config = $config_of{ident $self}; return $config->{query}; }
-	sub get_querykey         { my ($self)  = @_; my $config = $config_of{ident $self}; return $config->{querykey}; }
-	sub get_webenv           { my ($self)  = @_; my $config = $config_of{ident $self}; return $config->{webenv}; }
-	sub get_count            { my ($self)  = @_; my $config = $config_of{ident $self}; return $config->{count}; }
-	sub get_index            { my ($self)  = @_; my $config = $config_of{ident $self}; return $config->{index}; }
-	sub get_start_date       { my ($self)  = @_; my $config = $config_of{ident $self}; return $config->{start_date}; }
-	sub get_start_time       { my ($self)  = @_; my $config = $config_of{ident $self}; return $config->{start_time}; }
-	sub get_return_max       { my ($self)  = @_; my $config = $config_of{ident $self}; return $config->{return_max}; }
-	sub get_return_type       { my ($self)  = @_; my $config = $config_of{ident $self}; return $config->{return_type}; }
-	sub get_missing          { my ($self)  = @_; my $config = $config_of{ident $self}; return $config->{missing}; }
-
-	sub set_index            { my ($self, $value) = @_; my $config = $config_of{ident $self}; $config->{index} = $value; $config_of{ident $self} = $config; $self->_save(); }
-	sub set_missing          { my ($self, $value) = @_; my $config = $config_of{ident $self}; $config->{missing} = $value; $config_of{ident $self} = $config; $self->_save(); }
-
-	sub next_index           { my ($self) = @_; my $config = $config_of{ident $self}; $config->{index} += $config->{return_max}; $config_of{ident $self} = $config; $self->_save(); }
+	sub next_index           { my ($self) = @_; my $ident = ident $self; $index_of{$ident} += $return_max_of{$ident}; $self->_save(); }
 
 	sub get_config_filename  { my ($self)  = @_; my $project_id = $self->get_project_id(); $config_file =~ s/N/$project_id/; return $self->get_base_dir() . '/' . $config_file; } 
 	sub get_esearch_filename { my ($self)  = @_; my $project_id = $self->get_project_id(); $esearch_file =~ s/N/$project_id/; return $self->get_base_dir() . '/' . $esearch_file; } 
@@ -117,10 +113,10 @@ our $sleep_policy  = 2_750_000;
 		   $efetch_url .= "&retstart=$index&retmax=$return_max";
 		   $efetch_url .= '&tool=ncbix_bigfetch&email=roger@iosea.com';
 
-		# Get the batch
+		# Get the batch using LWP::Simple (get)
 		my $results  = get($efetch_url);
 		
-		# Check results
+		# Check results # TODO: capture expired WebEnv and restart query
 		if ( $results =~ m/resource is temporarily unavailable/i ) { $self->note_missing_batch( $index ); }
 		if ( $results =~ m/NCBI C\+\+ Exception/i )                { $self->note_missing_batch( $index ); }
 		if ( $results eq '' )                                      { $self->note_missing_batch( $index ); }
@@ -150,15 +146,14 @@ our $sleep_policy  = 2_750_000;
 	sub note_missing_batch { 
 		my ( $self, $index )    = @_; 
 		my @missing;
-		my $config              = $config_of{ident $self}; 
-		if ( defined $config->{missing} ) { 
-			@missing = @{ $config->{missing} }; 
+		my $missing             = $self->get_missing();
+		if ( defined $missing ) { 
+			@missing = @{ $missing }; 
 		} else { 
 			@missing = (); 
 		}
 		push @missing, $index;
-		$config->{missing}      = \@missing;
-		$config_of{ident $self} = $config; 
+		$self->set_missing( \@missing );
 		$self->_save();
 	}
 
@@ -316,12 +311,40 @@ our $sleep_policy  = 2_750_000;
 
 	sub _load {
 		my ( $self ) = @_;
-		return LoadFile( $self->get_config_filename() );
+		my %config = %{ LoadFile( $self->get_config_filename() ) };
+		$self->set_project_id( $config{project_id} );
+		$self->set_base_url( $config{base_url} );
+		$self->set_base_dir( $config{base_dir} );
+		$self->set_db( $config{db} );
+		$self->set_query( $config{query} );
+		$self->set_querykey( $config{querykey} );
+		$self->set_webenv( $config{webenv} );
+		$self->set_count( $config{count} );
+		$self->set_index( $config{index} );
+		$self->set_start_date( $config{start_date} );
+		$self->set_start_time( $config{start_time} );
+		$self->set_return_max( $config{return_max} );
+		$self->set_return_type( $config{return_type} );
+		$self->set_missing( $config{missing} );
 	}
 
 	sub _save {
 		my ( $self ) = @_;
-		DumpFile( $self->get_config_filename(), $config_of{ident $self} );
+		my $config   = {  project_id   => $project_id_of,
+				  base_url     => $base_url_of,
+				  base_dir     => $base_dir_of,
+				  db           => $db_of,
+				  query        => $query_of,
+				  querykey     => $querykey_of,
+				  webenv       => $webenv_of,
+				  count        => $count_of,
+				  index        => $index_of,
+				  start_date   => $start_date_of,
+				  start_time   => $start_time_of,
+				  return_max   => $return_max_of,
+				  return_type  => $return_type_of,
+				  missing      => $missing_of };
+		DumpFile( $self->get_config_filename(), $config );
 		return;
 	}
 
@@ -348,25 +371,25 @@ our $sleep_policy  = 2_750_000;
 		my ( $self, $path_file_name ) = @_;
 		my ($text, $line);
 		if (-e $path_file_name) {
-			open  (my $IN, '<', $path_file_name) || die("Cannot open $path_file_name: $!");
+			open  (my $IN, '<', $path_file_name) || croak( "Cannot open $path_file_name: $!" );
 			while ($line = <$IN>) { $text .= $line; }
-			close ($IN);
+			close ($IN)                          || croak( "Cannot close $path_file_name: $!" );
 		}
 		return $text;
 	}
 	
 	sub _set_file_text {
 		my ( $self, $path_file_name, $text ) = @_;
-		open  (my $OUT, '>', $path_file_name) || die("Cannot open $path_file_name: $!");
-		print $OUT $text;
-		close ($OUT);
+		open  (my $OUT, '>', $path_file_name)        || croak( "Cannot open $path_file_name: $!" );
+		print $OUT $text                             || croak( "Cannot write $path_file_name: $!" );
+		close ($OUT)                                 || croak( "Cannot close $path_file_name: $!" );
 	}
 	
 	sub _add_file_text {
 		my ( $self, $path_file_name, $text ) = @_;
-		open  (my $OUT, '>>', $path_file_name) || die("Cannot open $path_file_name: $!");
-		print $OUT $text;
-		close ($OUT);
+		open  (my $OUT, '>>', $path_file_name)       || croak( "Cannot open $path_file_name: $!" );
+		print $OUT $text                             || croak( "Cannot write $path_file_name: $!" );
+		close ($OUT)                                 || croak( "Cannot close $path_file_name: $!" );
 	}
 
 	sub _commify { # Perl Cookbook 2.17
@@ -431,7 +454,7 @@ to pick-up the download and recover missing batches or sequences.
 
 Results are retrived in batches depending on the "retmax" size. 
 
-=head2 MAIN FUNCTIONS
+=head2 METHODS
 
 =over 4
 
@@ -540,7 +563,7 @@ method thanks to Class::Std.
 
 =back
 
-=head2 PROPERTY FUNCTIONS
+=head2 PROPERTIES
 
 These get/set functions manage the modules properties.
 
@@ -690,13 +713,15 @@ http://www.ncbi.nlm.nih.gov/entrez/query/static/efetch_help.html
 
 http://eutils.ncbi.nlm.nih.gov/entrez/query/static/efetchseq_help.html
 
+http://www.ncbi.nlm.nih.gov/entrez/query/static/eutils_example.pl
+
 =head1 AUTHORS
 
-Roger Hall <roger@iosea.com> 
+Roger Hall (roger@iosea.com), (rahall2@ualr.edu)
 
-Michael Bauer <mbkodos@gmail.com> 
+Michael Bauer (mbkodos@gmail.com), (mabauer@ualr.edu) 
 
-Kamakshi Duvvuru <kduvvuru@gmail.com> 
+Kamakshi Duvvuru (kduvvuru@gmail.com) 
 
 =head1 COPYRIGHT AND LICENSE
 
