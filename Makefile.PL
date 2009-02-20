@@ -1,4 +1,5 @@
 use strict;
+use 5.006;
 use warnings;
 use ExtUtils::MakeMaker;
 
@@ -14,7 +15,6 @@ WriteMakefile(
     	'LWP::Simple'       => 1.41, 
     	'YAML'              => 0.65, 
     	'Time::HiRes'       => 1.9715, 
-    	'Bio::SeqIO'        => 0, 
 	'Class::Std'        => 0.0.9, 
 	'Class::Std::Utils' => 0.0.3,
     },

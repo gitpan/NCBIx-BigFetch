@@ -7,66 +7,81 @@ use Carp;
 use LWP::Simple;
 use YAML qw(DumpFile LoadFile);
 use Time::HiRes qw(usleep);
-use Bio::SeqIO;
 
-use version; our $VERSION = qv('0.5.5');
+use version; our $VERSION = qv('0.5.6');
 
 our $config_file   = 'efetch_N.yml';
 our $esearch_file  = 'esearch_N.txt';
 our $data_file     = 'sequences_N_M.txt';
-our $clean_file    = 'sequences_N.txt';
 our $sleep_policy  = 2_750_000;
 
-# Silence Perl::Critic from complaining about $config hashref
-## no critic (ProhibitAccessOfPrivateData)
-
 {
-	my %project_id_of         :ATTR( :get<asdf> :set<asdf> );
-	my %base_url_of           :ATTR( :get<asdf> :set<asdf> );
-	my %base_dir_of           :ATTR( :get<asdf> :set<asdf> );
-	my %db_of                 :ATTR( :get<asdf> :set<asdf> );
-	my %query_of              :ATTR( :get<asdf> :set<asdf> );
-	my %querykey_of           :ATTR( :get<asdf> :set<asdf> );
-	my %webenv_of             :ATTR( :get<asdf> :set<asdf> );
-	my %count_of              :ATTR( :get<asdf> :set<asdf> );
-	my %index_of              :ATTR( :get<asdf> :set<asdf> );
-	my %start_date_of         :ATTR( :get<asdf> :set<asdf> );
-	my %start_time_of         :ATTR( :get<asdf> :set<asdf> );
-	my %return_max_of         :ATTR( :get<asdf> :set<asdf> );
-	my %return_type_of        :ATTR( :get<asdf> :set<asdf> );
-	my %missing_of            :ATTR( :get<asdf> :set<asdf> );
+	# These properties have defaults but can also be initialized by new()
+	my %project_id_of         :ATTR( :get<project_id> :set<project_id> );
+	my %base_url_of           :ATTR( :get<base_url> :set<base_url> );
+	my %base_dir_of           :ATTR( :get<base_dir> :set<base_dir> );
+	my %db_of                 :ATTR( :get<db> :set<db> );
+	my %query_of              :ATTR( :get<query> :set<query> );
+	my %index_of              :ATTR( :get<index> :set<index> );
+	my %return_max_of         :ATTR( :get<return_max> :set<return_max> );
+	my %return_type_of        :ATTR( :get<return_type> :set<return_type> );
+	my %return_mode_of        :ATTR( :get<return_mode> :set<return_mode> );
+	my %missing_of            :ATTR( :get<missing> :set<missing> );
+
+	# These properties are set by the code
+	my %start_date_of         :ATTR( :get<start_date> :set<start_date> );
+	my %start_time_of         :ATTR( :get<start_time> :set<start_time> );
+	my %querykey_of           :ATTR( :get<querykey> :set<querykey> );
+	my %webenv_of             :ATTR( :get<webenv> :set<webenv> );
+	my %count_of              :ATTR( :get<count> :set<count> );
 
 	sub next_index           { my ($self) = @_; my $ident = ident $self; $index_of{$ident} += $return_max_of{$ident}; $self->_save(); }
 
 	sub get_config_filename  { my ($self)  = @_; my $project_id = $self->get_project_id(); $config_file =~ s/N/$project_id/; return $self->get_base_dir() . '/' . $config_file; } 
 	sub get_esearch_filename { my ($self)  = @_; my $project_id = $self->get_project_id(); $esearch_file =~ s/N/$project_id/; return $self->get_base_dir() . '/' . $esearch_file; } 
-	sub get_clean_filename   { my ($self)  = @_; my $project_id = $self->get_project_id(); $clean_file =~ s/N/$project_id/; return $self->get_base_dir() . '/' . $clean_file; } 
 	sub get_data_filename    { my ($self, $index)  = @_; my $project_id = $self->get_project_id(); $index = defined($index) ? $index : $self->get_index(); my $filename = $data_file; $filename =~ s/N/$project_id/g; $filename =~ s/M/$index/g; return $self->get_base_dir() . '/' . $filename; } 
 
 	sub BUILD {      
 		my ($self, $ident, $arg_ref) = @_;
 
 		# Set environment
-		$config_of{$ident} = $self->_init( $arg_ref );
-
+		$self->_init( $arg_ref );
+	
 		# Check for existing project
 		if (-e $self->get_config_filename()) { 
 			$self->_status("Loading existing project");
 
 			# Get existing config
-			$config_of{$ident} = $self->_load();
+			$self->_load();
 		} else {
 			$self->_status("Starting new project");
 
 			# Set start date and time
-			$config_of{$ident} = $self->_set_date( $config_of{$ident} );
+			$self->_set_date();
 	
-			# Submit search and save config
-			$config_of{$ident} = $self->_search( $config_of{$ident} );
-			$self->_save();
+			# Submit search and parse results
+			$self->_search();
+	
+			# Save config
+			$self->_save( $arg_ref );
 		}
 
 		return;
+	}
+
+	sub file_test {
+		my ( $self )   = @_;
+		my $file_written;
+
+		# Get the file names for the test (/home/username/e* or /root/e*)
+		my $config_filename  = $self->get_config_filename();
+		my $esearch_filename = $self->get_esearch_filename();
+
+		# Remove exisitng files and count files written
+		if (-e $config_filename )  { $file_written++; `rm $config_filename`; } 
+		if (-e $esearch_filename ) { $file_written++; `rm $esearch_filename`; } 
+
+		return $file_written;
 	}
 
 	sub results_waiting {
@@ -99,8 +114,9 @@ our $sleep_policy  = 2_750_000;
 
 	sub get_batch {
 		my ( $self, $index )   = @_;
-		my $return_max = $self->get_return_max();
+		my $return_max  = $self->get_return_max();
 		my $return_type = $self->get_return_type();
+		my $return_mode = $self->get_return_mode();
 
 		$self->_status("Starting with index " . $self->_commify( $index ) );
 		
@@ -109,7 +125,7 @@ our $sleep_policy  = 2_750_000;
 		
 		# Define a batch through URL
 		my $efetch_url  = $self->get_base_url() . 'efetch.fcgi?db=' . $self->get_db();
-		   $efetch_url .= '&WebEnv=' . $self->get_webenv() . '&query_key=' . $self->get_querykey() . "&rettype=$return_type";
+		   $efetch_url .= '&WebEnv=' . $self->get_webenv() . '&query_key=' . $self->get_querykey() . "&rettype=$return_type&retmode=$return_mode";
 		   $efetch_url .= "&retstart=$index&retmax=$return_max";
 		   $efetch_url .= '&tool=ncbix_bigfetch&email=roger@iosea.com';
 
@@ -160,6 +176,7 @@ our $sleep_policy  = 2_750_000;
 	sub get_sequence {
 		my ( $self, $id )   = @_;
 		my $return_type = $self->get_return_type();
+		my $return_mode = $self->get_return_mode();
 
 		$self->_status("Fetching sequence $id");
 		
@@ -168,7 +185,7 @@ our $sleep_policy  = 2_750_000;
 		
 		# Define a batch through URL
 		my $efetch_url  = $self->get_base_url() . 'efetch.fcgi?db=' . $self->get_db();
-		   $efetch_url .= '&id=' . $id . "&rettype=$return_type";
+		   $efetch_url .= '&id=' . $id . "&rettype=$return_type&retmode=$return_mode";
 		   $efetch_url .= '&tool=ncbix_bigfetch&email=roger@iosea.com';
 
 		# Get the sequence
@@ -204,76 +221,36 @@ our $sleep_policy  = 2_750_000;
 		return \@unavailables;
 	}
 
-	sub clean_sequences {
-		my ( $self )     = @_;
-		my $count        = $self->get_index();
-		my $return_max   = $self->get_return_max();
-		my $index        = 1;
-		my $clean_file   = $self->get_clean_filename();
-		my $out          = Bio::SeqIO->new(-file => ">$clean_file", -format => 'Fasta');
+	sub _init {
+		my ( $self, $arg_ref ) = @_;
 
-		while ( $index < $count ) {
-			my @good_sequences = $self->_check_ambiguous( $index );
-			foreach my $seq (@good_sequences) { $out->write_seq($seq); }
+		my $project_id   = $arg_ref->{project_id}  ? $arg_ref->{project_id}  : "1";    
+		my $base_url     = $arg_ref->{base_url}    ? $arg_ref->{base_url}    : "http://eutils.ncbi.nlm.nih.gov/entrez/eutils/";    
+		my $base_dir     = $arg_ref->{base_dir}    ? $arg_ref->{base_dir}    : $self->_get_base_dir();    
+		my $db           = $arg_ref->{db}          ? $arg_ref->{db}          : "protein";    
+		my $query        = $arg_ref->{query}       ? $arg_ref->{query}       : "apoptosis";    
+		my $index        = $arg_ref->{index}       ? $arg_ref->{index}       : "1";    
+		my $return_max   = $arg_ref->{return_max}  ? $arg_ref->{return_max}  : "500";    
+		my $return_type  = $arg_ref->{return_type} ? $arg_ref->{return_type} : "fasta";	
+		my $return_mode  = $arg_ref->{return_mode} ? $arg_ref->{return_mode} : "text";	
+		my $missing      = $arg_ref->{missing}     ? $arg_ref->{missing}     : [];
 
-			# Update the index
-			$index += $return_max;
-		}
-
-		my @good_sequences = $self->_check_ambiguous( 0 );
-		foreach my $seq (@good_sequences) { $out->write_seq($seq); }
-
-		$self->_status("Clean complete.");
+		$self->set_project_id( $project_id );
+		$self->set_base_url( $base_url );
+		$self->set_base_dir( $base_dir );
+		$self->set_db( $db );
+		$self->set_query( $query );
+		$self->set_index( $index );
+		$self->set_return_max( $return_max );
+		$self->set_return_type( $return_type );
+		$self->set_return_mode( $return_mode );
+		$self->set_missing( $missing );
 
 		return;
 	}
 
-	sub _check_ambiguous {
-		my ( $self, $index ) = @_;
-		my @good_sequences   = ();
-
-		my $in_file = $self->get_data_filename( $index );
-
-		if (-e $in_file) {
-			$self->_status("Cleaning $in_file");
-			
-			# Get the sequences
-			my $in  = Bio::SeqIO->new(-file => "<$in_file",  -format => 'Fasta');
-	
-			# Process each sequence from the input file (create $seq object)
-			while ( my $seq = $in->next_seq() ) {
-			        # Get the sequence
-				my $sequence = $seq->seq();
-				
-				# Filter for ambiguous characters
-				my $good_sequence = 1;
-				if ($sequence =~ m/J/)     { $good_sequence = 0; } 
-				if ($sequence =~ m/Error/) { $good_sequence = 0; } 
-					
-				if ($good_sequence) { push @good_sequences, $seq; }
-			}
-		}
-
-		return @good_sequences;
-	}
-
-	sub _init {
-		my ( $self, $arg_ref ) = @_;
-
-		$arg_ref->{base_url}     = $arg_ref->{base_url}   ? $arg_ref->{base_url}   : "http://eutils.ncbi.nlm.nih.gov/entrez/eutils/";    
-		$arg_ref->{base_dir}     = $arg_ref->{base_dir}   ? $arg_ref->{base_dir}   : $self->_get_base_dir();    
-		$arg_ref->{query}        = $arg_ref->{query}      ? $arg_ref->{query}      : "";    
-		$arg_ref->{db}           = $arg_ref->{db}         ? $arg_ref->{db}         : "protein";    
-		$arg_ref->{return_max}   = $arg_ref->{return_max} ? $arg_ref->{return_max} : "500";    
-		$arg_ref->{index}        = $arg_ref->{index}      ? $arg_ref->{index}      : "1";    
-		$arg_ref->{project_id}   = $arg_ref->{project_id} ? $arg_ref->{project_id} : "1";    
-		$arg_ref->{missing}      = $arg_ref->{missing}    ? $arg_ref->{missing}    : [];
-		$arg_ref->{return_type}  = $arg_ref->{return_type} ? $arg_ref->{return_type} : "fasta";	
-		return $arg_ref;
-	}
-
 	sub _set_date {
-		my ( $self, $arg_ref ) = @_;
+		my ( $self ) = @_;
 
 		my @time  = localtime;
 		my $year  = 1900 + $time[5];
@@ -283,13 +260,14 @@ our $sleep_policy  = 2_750_000;
 		my $min   = $time[1];     $min   =~ s/^(\d)$/0$1/;
 		my $sec   = $time[0];     $sec   =~ s/^(\d)$/0$1/;
 		
-		$arg_ref->{start_date} = "$year-$month-$day";
-		$arg_ref->{start_time} = "$hour:$min:$sec";
+		$self->set_start_date( "$year-$month-$day" );
+		$self->set_start_time( "$hour:$min:$sec" );
 
-		return $arg_ref;
+		return;
 	}
 
 	sub _search {
+		#my ( $self, $arg_ref ) = @_;
 		my ( $self, $arg_ref ) = @_;
 
 		# Get search result ticket
@@ -302,11 +280,11 @@ our $sleep_policy  = 2_750_000;
 		$self->_set_file_text( $self->get_esearch_filename(), $esearch_result );
 		
 		# Parse the relevant keys
-		$esearch_result =~ m/<Count>([0-9]*)<\/Count>/g;               $arg_ref->{count}    = $1;
-		$esearch_result =~ m/<QueryKey>([0-9]*)<\/QueryKey>/g;         $arg_ref->{querykey} = $1;
-		$esearch_result =~ m/<WebEnv>([\.a-zA-Z0-9_@\-]*)<\/WebEnv>/g; $arg_ref->{webenv}   = $1;
+		$esearch_result =~ m/<Count>([0-9]*)<\/Count>/g;               $self->set_count( $1 );
+		$esearch_result =~ m/<QueryKey>([0-9]*)<\/QueryKey>/g;         $self->set_querykey( $1 );
+		$esearch_result =~ m/<WebEnv>([\.a-zA-Z0-9_@\-]*)<\/WebEnv>/g; $self->set_webenv( $1 );
 
-		return $arg_ref;
+		return;
 	}
 
 	sub _load {
@@ -325,25 +303,34 @@ our $sleep_policy  = 2_750_000;
 		$self->set_start_time( $config{start_time} );
 		$self->set_return_max( $config{return_max} );
 		$self->set_return_type( $config{return_type} );
+		$self->set_return_mode( $config{return_mode} );
 		$self->set_missing( $config{missing} );
 	}
 
 	sub _save {
-		my ( $self ) = @_;
-		my $config   = {  project_id   => $project_id_of,
-				  base_url     => $base_url_of,
-				  base_dir     => $base_dir_of,
-				  db           => $db_of,
-				  query        => $query_of,
-				  querykey     => $querykey_of,
-				  webenv       => $webenv_of,
-				  count        => $count_of,
-				  index        => $index_of,
-				  start_date   => $start_date_of,
-				  start_time   => $start_time_of,
-				  return_max   => $return_max_of,
-				  return_type  => $return_type_of,
-				  missing      => $missing_of };
+		my ( $self, $arg_ref ) = @_;
+		my $ident    = ident $self;
+		my $config;
+
+		if (defined $arg_ref) {
+			$config = $arg_ref;
+		} else {
+			$config = {  project_id   => $project_id_of{$ident},
+				     base_url     => $base_url_of{$ident},
+				     base_dir     => $base_dir_of{$ident},
+				     db           => $db_of{$ident},
+				     query        => $query_of{$ident},
+				     querykey     => $querykey_of{$ident},
+				     webenv       => $webenv_of{$ident},
+				     count        => $count_of{$ident},
+				     index        => $index_of{$ident},
+				     start_date   => $start_date_of{$ident},
+				     start_time   => $start_time_of{$ident},
+				     return_max   => $return_max_of{$ident},
+				     return_type  => $return_type_of{$ident},
+				     return_mode  => $return_mode_of{$ident},
+				     missing      => $missing_of{$ident} };
+		}
 		DumpFile( $self->get_config_filename(), $config );
 		return;
 	}
@@ -399,7 +386,7 @@ our $sleep_policy  = 2_750_000;
 		return scalar reverse $text;
 	}
 	
-	sub authors { return 'Roger Hall <roger@iosea.com>, Michael Bauer <mbkodos@gmail.org>, Kamakshi Duvvuru <kduvvuru@gmail.com>'; }
+	sub authors { return 'Roger Hall <roger@iosea.com>, Michael Bauer <mbkodos@gmail.org>, Kamakshi Duvvuru <kduvvuru@gmail.com>. Copyleft (C) 2009'; }
 }
 
 1; # Magic true value required at end of module
@@ -407,7 +394,8 @@ __END__
 
 =head1 NAME
 
-NCBIx::BigFetch - Retrieve very large NCBI sequence result sets based on keyword search
+NCBIx::BigFetch - Robustly retrieve very large NCBI sequence result sets 
+based on keyword searches using NCBI eUtils.
 
 =head1 SYNOPSIS
 
@@ -440,21 +428,74 @@ NCBIx::BigFetch - Retrieve very large NCBI sequence result sets based on keyword
 
 =head1 DESCRIPTION
 
-NCBIx::BigFetch uses the esearch and efetch services of NCBI 
-to retrieve sequences by keyword. It was designed for very large 
-result sets; the first project it was used on had over 11,000,000 
-sequences. 
+NCBIx::BigFetch is useful for downloading very large result sets of sequences 
+from NCBI given a text query. Its first use had over 
+11,000,000 sequences as the result of a single keyword search. It uses YAML 
+to create a configuration file to maintain project state in case network or 
+server issues interrupts execution, in which case it may be easily restarted 
+after the last batch. 
 
 Downloaded data is organized by "project id" and "base directory" 
 and saved in text files. Each file includes the project id in 
-its name. Besides the data files, two other files are saved: 
+its name. The project_id and base_dir keys are the only required 
+keys, although you will get the same search for "apoptosis" 
+everytime unless you also set the "query" key. In any case, once 
+a project is started, it only needs the two parameters to be 
+reloaded.
+
+Besides the data files, two other files are saved: 
 1) the initial search result, which includes the WebEnv key, and 
 2) a configuration file, which saves the parsed data and is used 
 to pick-up the download and recover missing batches or sequences. 
 
-Results are retrived in batches depending on the "retmax" size. 
+Results are retrived in batches depending on the "return_max" key. 
+By default, the "index" starts at 1 and downloads continue until 
+the index exceedes "count".
 
-=head2 METHODS
+Occasionally errors happen and entire batches are not downloaded. 
+In this case, the "index" is added to the "missing" list. This 
+list is saved in the configuration file. The missing batches should 
+be downloaded every day, and not saved until the end of the complete 
+run.
+
+Working scripts are included in the script directory:
+
+	fetch-all.pp
+	fetch-missing.pp
+	fetch-unavailable.pp
+
+The recommended workflow is:
+
+	1. Copy the scripts and edit them for a specific project. Use 
+	   a new number as the project ID. 
+
+	2. Begin downloading by running fetch-all.pp, which will first 
+	   submit a query and save the resulting WebEnv key in a project 
+	   specific configuration file (using YAML).
+
+	3. The next morning, kill the fetch-all.pp process and run 
+	   fetch-missing.pp until it completes.  
+
+	4. Restart fetch-all.pp.  
+
+If you wish to re-download "not available" sequences, you may run 
+fetch-unavailable.pp. However, they will be downloaded at the end of 
+fetch-all.pp if it completes normally.
+
+If your query result set is so large that your WebEnv times out, simply 
+start a new project with that last index of the previous project, and 
+it will pick up the result set from there (with a new WebEnv). (Planned 
+upgrade will automagically start another search.)
+
+Warning: You may lose a (very) few sequences if your download extends 
+across multiple projects. However, our testing shows that the batches 
+generated with the same query within a few days of each other are largely 
+identical.
+
+=head2 MAIN METHODS
+
+These are the primary methods that implement the highest abilities 
+of the module. They are the ones found in the included scripts.
 
 =over 4
 
@@ -531,6 +572,23 @@ reads through all data files and creates a list of individual
 sequences that were unavailable when a batch was reported. The list 
 is returned as a perl list reference.
 
+=item * authors()
+
+  $project->authors();
+
+Surely you can stand a few bytes of vanity for the price of free software! 
+Actually, the email addresses are of the "lifetime" sort, so feel free 
+to contact the authors with any questions or concerns.
+
+=back
+
+=head2 ADDITIONAL METHODS
+
+These methods are not meant to be used in a stand alone fashion, but 
+if they did, it would look like this.
+
+=over 4
+
 =item * get_sequence()
 
   $project->get_sequence( $id );
@@ -541,163 +599,143 @@ which uses "0" as an index. All unavailable sequences retrieved
 this way are saved to this file, so it could potentially be larger 
 than the rest.
 
-=item * clean_sequences()
+  use NCBIx::BigFetch;
+  
+  my $id = 'AC123456';  # Get this however you want
 
-  $project->clean_sequences();
-
-Removes non-sequence text from sequence files and optionally removes 
-sequences with ambiguous characters.
-
-=item * authors()
-
-  $project->authors();
-
-Surely you can stand a few bytes of vanity for the price of free software!
-
-=item * BUILD()
-
+  # Parameters
+  my $params = { project_id => "1", 
+                 base_dir   => "/home/user/data" };
+  
+  # Start project
   my $project = NCBIx::BigFetch->new( $params );
 
-This method is *not* called directly, but rather included in the new() 
-method thanks to Class::Std.
+  # Get sequence
+  my $sequence = $project->get_sequence( $id );
 
-=back
+  exit;
 
-=head2 PROPERTIES
-
-These get/set functions manage the modules properties.
-
-=over 4
-
-=item * get_base_dir()
-
-  $project->get_base_dir();
-
-Gets the base directory for project data.
-
-=item * get_base_url()
-
-  $project->get_base_url();
-
-Gets the base URL for NCBI eUtils.
-
-=item * get_clean_filename()
-
-  $project->get_clean_filename();
-
-Creates a filename for a project's sequences to store "cleaned" sequences.
-
-=item * get_config_filename()
-
-  $project->get_config_filename();
-
-Creates a filename for the configuration file based on the project_id.
-
-=item * get_count()
-
-  $project->get_count();
-
-Returns the count of results for the query.
-
-=item * get_data_filename()
-
-  $project->get_data_filename();
-
-Creates a filename for a given batch based on project_id and result index.
-
-=item * get_db()
-
-  $project->get_db();
-
-Gets the eSearch database setting.
-
-=item * get_esearch_filename()
-
-  $project->get_esearch_filename();
-
-Creates a filename for saving the intial search request.
-
-=item * get_index()
-
-  $project->get_index();
-
-Gets the current result index. The index is reset after every attempted batch by 
-retmax amount.
-
-=item * get_missing()
-
-  $project->get_missing();
-
-Gets the list of missing batch indices.
-
-=item * get_project_id()
-
-  $project->get_project_id();
-
-Gets the project_id for the loaded project.
-
-=item * get_query()
-
-  $project->get_query();
-
-Gets the query string used for eSearch.
-
-=item * get_querykey()
-
-  $project->get_querykey();
-
-Gets the querykey setting from the eSearch results.
-
-=item * get_return_max()
-
-  $project->get_return_max();
-
-Gets the retmax setting used to limit the batch size.
-
-=item * get_return_type()
-
-  $project->get_return_type();
-
-Gets the rettype setting used to determine the format 
-of fetched sequences.
-
-=item * get_start_date()
-
-  $project->get_start_date();
-
-Calculates the start date for the project.
-
-=item * get_start_time()
-
-  $project->get_start_time();
-
-Calculates the start time for the project.
-
-=item * get_webenv()
-
-  $project->get_webenv();
-
-Gets the WebEnv key returned from eSearch. It is used 
-to build the eFetch URL for retrieving batches of 
-sequences.
+This method adds always adds the sequence to a special file with 
+batch index of 0.
 
 =item * next_index()
 
   $project->next_index();
 
-Gets the next result index, which defines the batch id.
+Gets the next result index by adding the return_max value to the current index. The 
+index is relative to the search results, and is the index of the first sequence in 
+the returned batch (which serves as the batch id).
 
-=item * set_index()
+=item * data_filename()
 
-  $project->set_index();
+  $project->data_filename();
 
-Sets the result index.
+Creates a filename for a given batch based on project_id and result index.
 
-=item * set_missing()
+=item * esearch_filename()
 
-  $project->set_missing();
+  $project->esearch_filename();
 
-Sets the list of missing batches.
+Creates a filename for saving the intial search request.
+
+=item * config_filename()
+
+  $project->config_filename();
+
+Creates a filename for the configuration file based on the project_id.
+
+=back
+
+=head2 PUBLIC PROPERTIES
+
+All of the properties have get_/set_ methods courtesy of Class:Std and the :ATTR feature.
+
+These properties have defaults but each may be overriden by passing 
+them as keys in a hashref to new(). (See the variable $params in the SYNOPSIS above.)
+
+=over 4
+
+=item * project_id
+
+The project_id is used to distinguish sets of data within a single data 
+directory. It is part of each filename associated with the project. The 
+default is "1". It is recommended that you always set project_id.
+
+=item * base_dir
+
+The base directory where project data will be saved. The default is 
+/home/username. It is recommended that you always set base_dir.
+
+
+=item * base_url
+
+The base URL for NCBI eUtils. The default is 
+"http://eutils.ncbi.nlm.nih.gov/entrez/eutils/".
+
+=item * db
+
+Gets the eSearch database setting. The default is "protein".
+
+=item * index
+
+Gets the current result index. The index is reset after every attempted batch by 
+retmax amount. The default is "1".
+
+=item * missing
+
+Gets the list of missing batch indices. This property is stored as an arrayref. The default is "[]".
+
+=item * query
+
+Gets the query string used for eSearch. The default is "apoptosis".
+
+=item * return_max
+
+Gets the retmax setting used to limit the batch size. The default is "500".
+
+=item * return_type
+
+Gets the rettype setting used to determine the format 
+of fetched sequences. The default is "fasta".
+
+=item * return_mode
+
+Gets the retmode setting used to determine the format 
+of fetched sequences. The default is "text".
+
+=back
+
+=head2 PUBLIC PROPERTIES
+
+These properties are set by the code.
+
+=over 4
+
+=item * querykey
+
+The querykey property is parsed from the eSearch result. It 
+is currently expected to always be be 1 (since only query 
+is ever submitted by NCBIx::BigFetch).
+
+=item * count
+
+The count property is parsed from the eSearch result and 
+represents the total number of results for the query.
+
+=item * webenv
+
+The WebEnv property is parsed from the eSearch result. It is used 
+to build the eFetch URL for retrieving batches of 
+sequences. It represens a pointer to the results, which are 
+stored on NCBI's servers for a few days before being deleted.
+
+=item * start_date
+
+Calculates the start date for the project.
+
+=item * start_time
+
+Calculates the start time for the project.
 
 =back
 
@@ -707,21 +745,32 @@ None
 
 =head1 SEE ALSO
 
-http://bioinformatics.ualr.edu/
+=over
 
-http://www.ncbi.nlm.nih.gov/entrez/query/static/efetch_help.html
+=item * http://bioinformatics.ualr.edu/
 
-http://eutils.ncbi.nlm.nih.gov/entrez/query/static/efetchseq_help.html
+=item * http://www.ncbi.nlm.nih.gov/entrez/query/static/efetch_help.html
 
-http://www.ncbi.nlm.nih.gov/entrez/query/static/eutils_example.pl
+=item * http://eutils.ncbi.nlm.nih.gov/entrez/query/static/efetchseq_help.html
+
+=item * http://www.ncbi.nlm.nih.gov/entrez/query/static/eutils_example.pl
+
+=back
 
 =head1 AUTHORS
 
-Roger Hall (roger@iosea.com), (rahall2@ualr.edu)
+Feel free to email the authors with questions or concerns. Please be patient 
+for a reply. 
 
-Michael Bauer (mbkodos@gmail.com), (mabauer@ualr.edu) 
+=over
 
-Kamakshi Duvvuru (kduvvuru@gmail.com) 
+=item * Roger Hall (roger@iosea.com), (rahall2@ualr.edu)
+
+=item * Michael Bauer (mbkodos@gmail.com), (mabauer@ualr.edu) 
+
+=item * Kamakshi Duvvuru (kduvvuru@gmail.com) 
+
+=back
 
 =head1 COPYRIGHT AND LICENSE
 

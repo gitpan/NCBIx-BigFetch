@@ -14,7 +14,7 @@ my $params = { project_id  => '1',
 my $project = NCBIx::BigFetch->new( $params );
 
 # Pat yourself on the back
-print " Authors: " . $project->authors() . "\n";
+print " AUTHORS: " . $project->authors() . "\n";
 
 # Attempt all batches of sequences
 while ( $project->results_waiting() ) { $project->get_next_batch(); }
